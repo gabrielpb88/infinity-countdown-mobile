@@ -236,9 +236,9 @@ function App() {
     ));
   };
 
-  const adjustActiveTimer = (minutesChange: number) => {
+  const adjustActiveTimer = (secondsChange: number) => {
     if (isRunningRef.current && targetEndMsRef.current !== null) {
-      targetEndMsRef.current += minutesChange * 60 * 1000;
+      targetEndMsRef.current += secondsChange * 1000;
       syncTimer();
     }
   };
@@ -387,18 +387,18 @@ function App() {
                 <View style={styles.adjustButtons}>
                   <TouchableOpacity
                       style={[styles.adjustButton, { backgroundColor: theme.cardBg, borderColor: theme.border }]}
-                      onPress={() => adjustActiveTimer(1)}
+                      onPress={() => adjustActiveTimer(15)}
                   >
                     <ChevronUpIcon size={20} color={getTimerColor(activeTimerIndex)} />
-                    <Text style={[styles.adjustButtonText, { color: theme.text }]}>+1 min</Text>
+                    <Text style={[styles.adjustButtonText, { color: theme.text }]}>+15s</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                       style={[styles.adjustButton, { backgroundColor: theme.cardBg, borderColor: theme.border }]}
-                      onPress={() => adjustActiveTimer(-1)}
+                      onPress={() => adjustActiveTimer(-15)}
                   >
                     <ChevronDownIcon size={20} color={getTimerColor(activeTimerIndex)} />
-                    <Text style={[styles.adjustButtonText, { color: theme.text }]}>-1 min</Text>
+                    <Text style={[styles.adjustButtonText, { color: theme.text }]}>-15s</Text>
                   </TouchableOpacity>
                 </View>
 
