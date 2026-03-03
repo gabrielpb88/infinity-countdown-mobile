@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Audio } from 'expo-av';
 import {
   StyleSheet,
@@ -12,6 +12,8 @@ import {
   Platform,
   Animated,
   Easing,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import {
   MoonIcon,
@@ -22,61 +24,146 @@ import {
   ChevronDownIcon
 } from '../../components/Icons';
 
-const { width, height } = Dimensions.get('window');
+const { height } = Dimensions.get('window');
 
+type TimerItem = {
+  id: number;
+  label: string;
+  minutes: number;
+  seconds: number;
+};
 
 function App() {
   // Initial timers with default values
-  const [timers, setTimers] = useState([
+  const [timers, setTimers] = useState<TimerItem[]>([
     { id: 1, label: 'Timer 1', minutes: 0, seconds: 0 }
   ]);
 
-  const [timeLeft, setTimeLeft] = useState(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [activeTimerIndex, setActiveTimerIndex] = useState(0);
   const [cycles, setCycles] = useState(0);
   const [isDark, setIsDark] = useState(false);
   const [nextTimerId, setNextTimerId] = useState(3);
-  const intervalRef = useRef(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const targetEndMsRef = useRef<number | null>(null);
+  const timersRef = useRef<TimerItem[]>(timers);
+  const activeTimerIndexRef = useRef(0);
+  const isRunningRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   // Animation values
   const progressHeight = useRef(new Animated.Value(0)).current;
 
-  const playSound = async () => {
+  useEffect(() => {
+    timersRef.current = timers;
+  }, [timers]);
+
+  useEffect(() => {
+    activeTimerIndexRef.current = activeTimerIndex;
+  }, [activeTimerIndex]);
+
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  const getTimerDurationSeconds = (timer?: TimerItem) => {
+    if (!timer) return 0;
+    return Math.max(0, timer.minutes * 60 + timer.seconds);
+  };
+
+  const clearTicker = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  };
+
+  const playSound = useCallback(async () => {
     const { sound } = await Audio.Sound.createAsync(
-        require('../../assets/sounds/bell.mp3') // Adjust the path to your sound file
+      require('../../assets/sounds/bell.mp3')
     );
     await sound.playAsync();
-  };
+  }, []);
+
+  const syncTimer = useCallback(() => {
+    if (!isRunningRef.current || targetEndMsRef.current === null || timersRef.current.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    let currentIndex = activeTimerIndexRef.current;
+    let targetEndMs = targetEndMsRef.current;
+    let cyclesToAdd = 0;
+    let completedTimers = 0;
+
+    while (now >= targetEndMs && timersRef.current.length > 0) {
+      completedTimers += 1;
+      currentIndex = (currentIndex + 1) % timersRef.current.length;
+      if (currentIndex === 0) {
+        cyclesToAdd += 1;
+      }
+
+      const nextDurationSeconds = Math.max(1, getTimerDurationSeconds(timersRef.current[currentIndex]));
+      targetEndMs += nextDurationSeconds * 1000;
+    }
+
+    const nextTimeLeft = Math.max(0, Math.ceil((targetEndMs - now) / 1000));
+
+    if (completedTimers > 0 && appStateRef.current === 'active') {
+      playSound().catch(() => {
+        // Ignore sound errors to keep timer uninterrupted.
+      });
+    }
+
+    if (currentIndex !== activeTimerIndexRef.current) {
+      activeTimerIndexRef.current = currentIndex;
+      setActiveTimerIndex(currentIndex);
+    }
+
+    if (cyclesToAdd > 0) {
+      setCycles(prev => prev + cyclesToAdd);
+    }
+
+    targetEndMsRef.current = targetEndMs;
+    setTimeLeft(nextTimeLeft);
+  }, [playSound]);
+
+  const startTicker = useCallback(() => {
+    clearTicker();
+    intervalRef.current = setInterval(syncTimer, 250);
+  }, [syncTimer]);
 
   // Timer logic
   useEffect(() => {
-    if (isRunning && timeLeft !== null) {
-      if (timeLeft > 0) {
-        intervalRef.current = setInterval(() => {
-          setTimeLeft(prev => prev - 1);
-        }, 1000);
-      } else {
-        // Timer reached zero - move to next timer
-        playSound(); // Play sound when timer completes
-
-        const nextIndex = (activeTimerIndex + 1) % timers.length;
-        setActiveTimerIndex(nextIndex);
-        setTimeLeft(timers[nextIndex].minutes * 60 + timers[nextIndex].seconds);
-
-        // Increment cycle when we loop back to first timer
-        if (nextIndex === 0) {
-          setCycles(prev => prev + 1);
-        }
-      }
+    if (!isRunning) {
+      clearTicker();
+      return;
     }
 
+    startTicker();
+    syncTimer();
+
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      clearTicker();
     };
-  }, [isRunning, timeLeft, activeTimerIndex, timers]);
+  }, [isRunning, startTicker, syncTimer]);
+
+  // Re-sync when app returns to foreground after being minimized/backgrounded.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (previousState !== 'active' && nextState === 'active') {
+        syncTimer();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [syncTimer]);
 
   // Update progress animation
   useEffect(() => {
@@ -98,14 +185,19 @@ function App() {
         useNativeDriver: false,
       }).start();
     }
-  }, [timeLeft, isRunning, activeTimerIndex, timers]);
+  }, [timeLeft, isRunning, activeTimerIndex, timers, progressHeight]);
 
   const handleStart = () => {
     if (!isRunning && timers.length > 0) {
-      const allValid = timers.every(t => (t.minutes * 60 + t.seconds) > 0);
+      const allValid = timers.every(t => getTimerDurationSeconds(t) > 0);
       if (allValid) {
+        const initialDuration = getTimerDurationSeconds(timers[0]);
+        const nextTarget = Date.now() + initialDuration * 1000;
+
+        activeTimerIndexRef.current = 0;
+        targetEndMsRef.current = nextTarget;
         setActiveTimerIndex(0);
-        setTimeLeft(timers[0].minutes * 60 + timers[0].seconds);
+        setTimeLeft(initialDuration);
         setIsRunning(true);
         setCycles(0);
       }
@@ -114,11 +206,12 @@ function App() {
 
   const handleStop = () => {
     setIsRunning(false);
+    isRunningRef.current = false;
+    targetEndMsRef.current = null;
     setTimeLeft(null);
+    activeTimerIndexRef.current = 0;
     setActiveTimerIndex(0);
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
+    clearTicker();
   };
 
   const addTimer = () => {
@@ -131,22 +224,22 @@ function App() {
     setNextTimerId(nextTimerId + 1);
   };
 
-  const removeTimer = (id) => {
+  const removeTimer = (id: number) => {
     if (timers.length > 1) {
       setTimers(timers.filter(t => t.id !== id));
     }
   };
 
-  const updateTimer = (id, field, value) => {
+  const updateTimer = (id: number, field: keyof Pick<TimerItem, 'label' | 'minutes' | 'seconds'>, value: string | number) => {
     setTimers(timers.map(t =>
-        t.id === id ? { ...t, [field]: value } : t
+      t.id === id ? { ...t, [field]: value } : t
     ));
   };
 
-  const adjustActiveTimer = (minutesChange) => {
-    if (isRunning && timeLeft !== null) {
-      const newTime = Math.max(0, timeLeft + (minutesChange * 60));
-      setTimeLeft(newTime);
+  const adjustActiveTimer = (minutesChange: number) => {
+    if (isRunningRef.current && targetEndMsRef.current !== null) {
+      targetEndMsRef.current += minutesChange * 60 * 1000;
+      syncTimer();
     }
   };
 
@@ -159,7 +252,7 @@ function App() {
 
   const activeTimer = timers[activeTimerIndex];
 
-  const getTimerColor = (index) => {
+  const getTimerColor = (index: number) => {
     const colors = ['#2DD4BF', '#38BDF8', '#A78BFA', '#FB923C', '#F472B6', '#34D399'];
     return colors[index % colors.length];
   };
